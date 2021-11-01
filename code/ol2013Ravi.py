@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Aug 26 15:49:14 2021
+Coupled equations for all the four optical waves
+@author: YeK
+Ref1: OE 2011 Four-wave mixing analysis of Brillouin
+dynamic grating in a polarization-maintaining fiber: theory and experiment
+Ref2: OL 2013 Observation of Brillouin dynamic grating in a photonic chip
+"""
+
+import numpy as np
+from numpy import exp, conj, pi, sqrt
+from scipy.constants import speed_of_light
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_bvp
+from odeintw import odeintw
+
+
+def power(A):
+    """
+    power of the wave
+
+    Parameters
+    ----------
+    A : complex128
+        The power amplitudes of the wave.
+
+    Returns
+    -------
+    Power of the wave.
+    """
+    return abs(A * conj(A))
+
+
+def eta(Omega, r_e, omega1, rho, omega_b, gamma_b, A_eff):
+    """
+    The frequency related coupling coefficient, the variable is Omega
+
+    Parameters
+    ----------
+    Omega : float64
+        The actual frequecny difference between the two pumps (also that between the probe and
+                                                               the diffracted wave).
+    r_e : float64
+        The electrostrictive constant.
+    omega1 : float64
+        Frequency of the pump1
+    rho : float64
+        Density of the core of the optical fiber.
+    omega_b : float64
+        Brillouin frequency of the optical fiber.
+    gamma_b : float64
+        Brillouin linewidth of the optical fiber.
+    A_eff : float64
+        Acousto-optic effective area.
+
+    Returns
+    -------
+    Coupling coefficient at certain frequency.
+    """
+    return r_e**2 * omega1**3 / (rho * speed_of_light**4 * A_eff * (omega_b**2 - Omega**2 - 1j
+                                                                    * gamma_b * Omega))
+
+
+def etaV2(Omega, G, omega_b, gamma_b):
+    """
+    The frequency related coupling coefficient, the variable is Omega
+
+    Parameters
+    ----------
+    Omega : float64
+        The actual frequecny difference between the two pumps (also that between the probe and
+                                                               the diffracted wave).
+    G : float64
+        The Brillouin gain coefficient, unit: m^(-1)*W^(-1)
+    omega_b : float64
+        Brillouin frequency of the optical fiber.
+    gamma_b : float64
+        Brillouin linewidth of the optical fiber.
+
+    Returns
+    -------
+    Coupling coefficient at certain frequency.
+    """
+    return G * omega_b * gamma_b / (omega_b**2 - Omega**2 - 1j * gamma_b * Omega)
+
+
+def delta_omega(neff1, neff2, lamb):
+    """
+    The required angle frequency splitting between the pump1 and the probe for phase matching
+
+    Parameters
+    ----------
+    neff1 : float64
+        Effective index along the slow axes of the opticall fiber.
+    neff2 : float64
+        Effective index along the fast axes of the optical fiber.
+    lamb : float64
+        Wavelength of the pump1.
+
+    Returns
+    -------
+    The required angle frequency spliting between the pump1 and the probe for phase matching
+    """
+    delta_n = abs(neff1 - neff2)  # effective index variance along the optical fiber
+    freq = speed_of_light / lamb  # frequency of the pump1, unit: rad*Hz
+    return 2 * pi * delta_n * freq / (neff1 - delta_n)
+
+
+def delta_k(neff1, neff2, omega1, omega3):
+    """
+    Phase mismatch of the BDG when the frequencies of the pump1 and the probe are
+    omega1 and omega3 seperately
+
+    Parameters
+    ----------
+    neff1 : float64
+        Effective index along the slow axes of the opticall fiber.
+    neff2 : float64
+        Effective index along the fast axes of the optical fiber.
+    omega1 : float64
+        Angle frequency of the pump1.
+    omega3 : float64
+        Angle frequency of the probe.
+
+    Returns
+    -------
+    Phase mismatch of the BDG when the frequencies of the pump1 and the probe are
+    omega1 and omega3 seperately
+    """
+    q1 = 2 * omega1 * neff1 / speed_of_light  # wavevector from pump1 and pump2
+    q2 = 2 * omega3 * neff2 / speed_of_light  # Wavevector from probe and diffracted wave
+    return q2 - q1
+
+
+def dadz(z, y, eta1, eta2, delta_k, alpha):
+    """
+    four wave mixing coupled equations
+
+    Parameters
+    ----------
+    z : float64
+        Locations at the optical fiber.
+    y : complex128
+        The power amplitudes of the four waves.
+    eta1 : float64
+        Coupling coefficient between the two pumps, which is related to the frequency difference between
+        the two pumps, the Brillouin frequency, and the Brillouin linewidth.
+    eta2 : float64
+        Coupling coefficient between the probe and the diffracted wave, which is related to the frequency
+        difference between the two pumps, the Brillouin frequency, and the Brillouin linewidth.
+    delta_k : float64
+        Phase mismatch which is related to the frequency difference.
+    alpha : float64
+        Propagation loss of the amplitude
+    Returns
+    -------
+    Left hand side of the coupled equations
+    """
+    A1, A2, A3, A4 = y
+    diff = [
+        1j * eta1 * (A1 * power(A2) + A2 * A3 * conj(A4)
+                     * exp(1j * delta_k * z)) - alpha * A1,
+        -1j * conj(eta1) * (A2 * power(A1) + A1 * A4 * conj(A3)
+                            * exp(-1j * delta_k * z)) + alpha * A2,
+        1j * eta2 * (A3 * power(A4) + A1 * A4 * conj(A2) *
+                     exp(-1j * delta_k * z)) - alpha * A3,
+        -1j * conj(eta2) * (A4 * power(A3) + A2 * A3 * conj(A1)
+                            * exp(1j * delta_k * z)) + alpha * A4
+    ]
+    return diff
+
+
+def bc(y0, yL, eta1, eta2, delta_k):
+    """
+    boundary conditions for the BVP solver
+
+    Parameters
+    ----------
+    y0 : array
+        Power amplitudes of the four waves at z=0
+    yl : array
+        Power amplitudes of the four waves at z=L.
+    eta1 : float64
+        Coupling coefficient between the two pumps, which is related to the frequency difference between
+        the two pumps, the Brillouin frequency, and the Brillouin linewidth.
+    eta2 : float64
+        Coupling coefficient between the probe and the diffracted wave, which is related to the frequency
+        difference between the two pumps, the Brillouin frequency, and the Brillouin linewidth.
+    delta_k : float64
+        Phase mismatch which is related to the frequency difference.
+
+    Returns
+    -------
+    The residuals of the boundary condition, the values of which should be zero.
+
+    """
+    A10, A20, A30, A40 = y0
+    A1L, A2L, A3L, A4L = yL
+    """
+    The boundary conditions are A10 = sqrt(0.2), A2L = sqrt(0.008), A30 = sqrt(0.0008), A4L = 0
+    """
+    return [A10 - sqrt(0.2), A2L - sqrt(0.008), A30 - sqrt(0.0008), A4L]
+
+
+def plotPower(z_span, data, style=['science', 'no-latex'], ax=None, lab=''):
+    """
+    Plot the power of the four waves along the optical fiber
+
+    Parameters
+    ----------
+    z_span : 1dArray
+        Locations at the optical fiber.
+    data : 2dArray
+        Power amplitudes of the four waves along the optical fiber.
+    style : string, optional
+        matplotlib subplot style. The default is ['science', 'no-latex'].
+    ax : int, optional
+        DESCRIPTION. The default is None.
+
+    Returns
+    -------
+    Power of the four waves in one figure.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, dpi=200, figsize=(6, 3))
+
+    p1 = power(data[:, 0])  # power of the pump1
+    p2 = power(data[:, 1])  # power of the pump2
+    p3 = power(data[:, 2])  # power of the probe
+    p4 = power(data[:, 3])  # power of the diffracted wave
+
+    ax.plot(z_span, abs(p1), label='pump1' + lab)
+    ax.plot(z_span, abs(p2), label='pump2')
+    ax.plot(z_span, abs(p3), label='probe')
+    ax.plot(z_span, abs(p4), label='diffracted wave')
+    ax.legend()
+    return ax
+
+
+if __name__ == '__main__':
+    """
+    parameters of the optical fiber
+    """
+    length = 6.5 * 10**(-2)  # the length of the waveguide, unit: m
+    lamb = 1550 * 10**(-9)  # wavelength at 1550 nm
+    rho = 3200   # density of the chalcogenide, unit kg/m ** (-3)
+    r_e = 10.54  # electrostrictive constant of the chalcogenide
+    gamma_b = (2 * pi) * 34 * 10**6  # Brillouin bandwidth, unit: rad * Hz
+    omega_b = (2 * pi) * 7.768 * 10**9  # Brillouin frequency, unit: rad * Hz
+    A_eff = 2.3 * 10**(-12) / 0.95  # acoustic-optic effective area, unit: m ** 2
+    nbx = 2.3154  # refractive index in x polarization
+    nby = 2.2770  # refractive index in y polarization
+    alpha = 10.09  # propagation loss, unit: m**(-1)
+    gb = 0.74 * 10**(-9)  # Brillouin scattering cross section, unit: m/W
+    G = gb / A_eff  # Brillouin gain coefficient, unit: m^-1 W^-1
+    va = 2600  # Speed of sound in the chalcogenide waveguide, unit: m/s
+
+    omega1 = 2 * pi * speed_of_light / lamb  # angle frequency of the pump1
+    omega_diffpump = omega_b  # Angle frequency difference between the two pumps
+
+    # Actual angle frequency difference between the probe and the pump1
+    omega_diffpprobeSpan = 2 * pi * \
+        (np.linspace(-5000, 5000, 400) * 10**6) + delta_omega(nbx, nby, lamb)
+
+    # calculated reflectivity at different Omega
+    rfwm_span = np.zeros(len(omega_diffpprobeSpan))
+    for omega_diffpprobe, i in zip(omega_diffpprobeSpan, np.arange(len(omega_diffpprobeSpan))):
+        omega3 = omega1 + omega_diffpprobe  # actual angle frequency of the probe
+
+        #  Phase mismatching at different probe frequencies
+        delta_k0 = delta_k(nbx, nby, omega1, omega3)
+
+        #  Coupling coefficient between the two pumps
+        eta1 = eta(omega_diffpump, r_e, omega1, rho, omega_b, gamma_b, A_eff)
+        # eta1 = etaV2(omega_diffpump, G, omega_b, gamma_b)
+
+        #  Coupling coefficient between the probe and the diffracted wave
+        eta2 = eta(omega_diffpump, r_e, omega3, rho, omega_b, gamma_b, A_eff)
+        # eta2 = etaV2(omega_diffpump, G, omega_b, gamma_b)
+
+        """
+        define the power amplitudes of the four waves and the length span of the optical fiber
+        """
+        z_span = np.linspace(0, length, 1000)
+        # power amplitude of the pump1 along the fiber
+        A1_span = np.zeros(len(z_span))
+        # power amplitude of the pump2 along the fiber
+        A2_span = np.zeros(len(z_span))
+        # power amplitude of the probe along the fiber
+        A3_span = np.zeros(len(z_span))
+        # power amplitude of the diffracted wave along the fiber
+        A4_span = np.zeros(len(z_span))
+
+        """
+        initial guessing of the pump1, pump2, probe, and the diffracted wave at z=0
+        """
+        init = [
+            sqrt(0.2) + 0j, sqrt(0.008), sqrt(0.0008) + 0j, 0j
+        ]
+
+        """
+        initial guessing for the BVP solver
+        """
+        dataStart = odeintw(dadz, init, z_span, args=(
+            eta1, eta2, delta_k0, alpha), tfirst=True)
+
+        """
+        BVP solver
+        """
+        data = solve_bvp(
+            lambda z, y: dadz(z, y, eta1=eta1, eta2=eta2,
+                              delta_k=delta_k0, alpha=alpha),
+            lambda y0, yL: bc(y0, yL, eta1=eta1, eta2=eta2, delta_k=delta_k0),
+            z_span,
+            dataStart.T
+        )
+
+        #  The calcualted power amplitude of the probe
+        A30 = data.y[2, 0]
+
+        #  The calculated power amplitude of the diffracted wave
+        A40 = data.y[3, 0]
+
+        """
+        Calculate the reflectivity
+        """
+        rfwm_cal = power(A40)/power(A30)
+        rfwm_span[i] = rfwm_cal
+
+        """
+        Calculation progress
+        """
+        print('Progress: {}%'.format(100 * i / len(omega_diffpprobeSpan)))
+
+    plt.plot((omega_diffpprobeSpan - delta_omega(nbx, nby, lamb)) /
+             (2 * pi), rfwm_span, label='chalcogenide')
+    plt.legend()
